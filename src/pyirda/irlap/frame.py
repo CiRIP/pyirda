@@ -112,6 +112,11 @@ class SFrame(Frame):
 
 
 class IFrame(Frame):
+    def __init__(self, address: int, command: bool, ns: int, nr: int, information: bytes, pf: bool) -> None:
+        super().__init__(address, command=command, control=0, information=information, pf=pf)
+        self.ns = ns
+        self.nr = nr
+
     def is_valid(self) -> bool:
         return super().is_valid() and self.control & 0b00000001 == 0b00000000
 

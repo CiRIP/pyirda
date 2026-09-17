@@ -1,4 +1,4 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass, replace
 
 from pyirda.exceptions import IrdaException
 
@@ -82,15 +82,26 @@ ADDITIONAL_BOFS_AT_115200 = {
 }
 
 
+FIELDS = {
+    PI_BAUD_RATE: "baud_rate_pv",
+    PI_MAX_TURN_AROUND: "max_turn_around_pv",
+    PI_DATA_SIZE: "data_size_pv",
+    PI_WINDOW_SIZE: "window_size_pv",
+    PI_ADDITIONAL_BOFS: "additional_bofs_pv",
+    PI_MIN_TURN_AROUND: "min_turn_around_pv",
+    PI_LINK_DISCONNECT: "link_disconnect_pv",
+}
+
+
 class NegotiationError(IrdaException):
     pass
 
 
-@dataclass
+@dataclass(frozen=True)
 class NegotiationParameters:
-    baud_rate_pv: int = 0b00000010  # 9600 only by default
-    max_turn_around_pv: int = 0b00000001  # 500ms
-    data_size_pv: int = 0b00111111
+    baud_rate_pv: int = 0b00000010  # 9600 only
+    max_turn_around_pv: int = 0b00000001  # 500ms, the only valid value below 115200
+    data_size_pv: int = 0b00000111  # up to 256 bytes, the most that fits a 500ms turn at 9600
     window_size_pv: int = 0b01111111
     additional_bofs_pv: int = 0b11111111
     min_turn_around_pv: int = 0b11111111
@@ -98,51 +109,24 @@ class NegotiationParameters:
 
     @classmethod
     def parse(cls, data: bytes) -> "NegotiationParameters":
-        params = cls()
+        fields = {}
         i = 0
-        while i < len(data):
-            if i + 2 > len(data):
-                break
+        while i + 2 <= len(data):
             pi = data[i]
             pl = data[i + 1]
             pv = data[i + 2 : i + 2 + pl]
             i += 2 + pl
 
-            if not pv or len(pv) != pl:
+            if pl == 0 or len(pv) != pl:
                 continue
 
-            match pi:
-                case 0x01:
-                    params.baud_rate_pv = pv[0]
-                case 0x82:
-                    params.max_turn_around_pv = pv[0]
-                case 0x83:
-                    params.data_size_pv = pv[0]
-                case 0x84:
-                    params.window_size_pv = pv[0]
-                case 0x85:
-                    params.additional_bofs_pv = pv[0]
-                case 0x86:
-                    params.min_turn_around_pv = pv[0]
-                case 0x08:
-                    params.link_disconnect_pv = pv[0]
-                case _:
-                    pass  # unknown parameter, ignore per spec
-        return params
+            if pi in FIELDS:
+                fields[FIELDS[pi]] = pv[0]
+
+        return cls(**fields)
 
     def build(self) -> bytes:
-        out = bytearray()
-        for pi, pv in [
-            (0x01, self.baud_rate_pv),
-            (0x82, self.max_turn_around_pv),
-            (0x83, self.data_size_pv),
-            (0x84, self.window_size_pv),
-            (0x85, self.additional_bofs_pv),
-            (0x86, self.min_turn_around_pv),
-            (0x08, self.link_disconnect_pv),
-        ]:
-            out += bytes([pi, 1, pv])
-        return bytes(out)
+        return b"".join(bytes([pi, 1, getattr(self, name)]) for pi, name in FIELDS.items())
 
     def negotiate(self, remote: "NegotiationParameters") -> tuple["NegotiationParameters", "NegotiationParameters"]:
         """
@@ -150,25 +134,30 @@ class NegotiationParameters:
         Type 0 (baud rate, link disconnect): AND the PV fields, then pick MSB.
         Type 1 (everything else): pick MSB of our and their PV - independently negotiated.
         """
-        ours = NegotiationParameters()
-        theirs = NegotiationParameters()
+        baud_rate_pv = _pick_type0(self.baud_rate_pv, remote.baud_rate_pv)
+        link_disconnect_pv = _pick_type0(self.link_disconnect_pv, remote.link_disconnect_pv)
 
-        ours.baud_rate_pv = _pick_type0(self.baud_rate_pv, remote.baud_rate_pv)
-        ours.link_disconnect_pv = _pick_type0(self.link_disconnect_pv, remote.link_disconnect_pv)
-        theirs.baud_rate_pv = _pick_type0(self.baud_rate_pv, remote.baud_rate_pv)
-        theirs.link_disconnect_pv = _pick_type0(self.link_disconnect_pv, remote.link_disconnect_pv)
+        ours = replace(
+            self,
+            baud_rate_pv=baud_rate_pv,
+            link_disconnect_pv=link_disconnect_pv,
+            max_turn_around_pv=_pick_type1(self.max_turn_around_pv),
+            data_size_pv=_pick_type1(self.data_size_pv),
+            window_size_pv=_pick_type1(self.window_size_pv),
+            additional_bofs_pv=_pick_type1(self.additional_bofs_pv),
+            min_turn_around_pv=_pick_type1(self.min_turn_around_pv),
+        )
 
-        ours.max_turn_around_pv = _pick_type1(self.max_turn_around_pv)
-        ours.data_size_pv = _pick_type1(self.data_size_pv)
-        ours.window_size_pv = _pick_type1(self.window_size_pv)
-        ours.additional_bofs_pv = _pick_type1(self.additional_bofs_pv)
-        ours.min_turn_around_pv = _pick_type1(self.min_turn_around_pv)
-
-        theirs.max_turn_around_pv = _pick_type1(remote.max_turn_around_pv)
-        theirs.data_size_pv = _pick_type1(remote.data_size_pv)
-        theirs.window_size_pv = _pick_type1(remote.window_size_pv)
-        theirs.additional_bofs_pv = _pick_type1(remote.additional_bofs_pv)
-        theirs.min_turn_around_pv = _pick_type1(remote.min_turn_around_pv)
+        theirs = replace(
+            remote,
+            baud_rate_pv=baud_rate_pv,
+            link_disconnect_pv=link_disconnect_pv,
+            max_turn_around_pv=_pick_type1(remote.max_turn_around_pv),
+            data_size_pv=_pick_type1(remote.data_size_pv),
+            window_size_pv=_pick_type1(remote.window_size_pv),
+            additional_bofs_pv=_pick_type1(remote.additional_bofs_pv),
+            min_turn_around_pv=_pick_type1(remote.min_turn_around_pv),
+        )
 
         return ours, theirs
 
@@ -202,6 +191,19 @@ class NegotiationParameters:
         return _msb_lookup(self.additional_bofs_pv, ADDITIONAL_BOFS_AT_115200)
 
 
+CAPABILITIES = NegotiationParameters()
+
+CONTENTION = NegotiationParameters(
+    baud_rate_pv=0b00000010,
+    max_turn_around_pv=0b00000001,
+    data_size_pv=0b00000001,
+    window_size_pv=0b00000001,
+    additional_bofs_pv=0b10000000,
+    min_turn_around_pv=0b00000001,
+    link_disconnect_pv=0b10000000,
+)
+
+
 def _msb_lookup(pv: int, table: dict) -> int:
     for bit in range(7, -1, -1):
         mask = 1 << bit
@@ -215,12 +217,10 @@ def _pick_type0(ours: int, theirs: int) -> int:
     agreed = ours & theirs
     if agreed == 0:
         raise NegotiationError(f"No common capabilities. Ours: {ours:08b}, Theirs: {theirs:08b}")
-    msb = 1 << (agreed.bit_length() - 1)
-    return msb
+    return 1 << (agreed.bit_length() - 1)
 
 
 def _pick_type1(ours: int) -> int:
     if ours == 0:
         raise NegotiationError("No capabilities set for type 1 parameter")
-    msb = 1 << (ours.bit_length() - 1)
-    return msb
+    return 1 << (ours.bit_length() - 1)

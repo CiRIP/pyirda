@@ -1,49 +1,50 @@
+import argparse
 import asyncio
 import logging
 
 import serial_asyncio
 
-from .irlap import Frame, IrLAP
+from .irlap import IrLAP
 
-logging.basicConfig(
-    level=logging.DEBUG,
-)
+logging.basicConfig(level=logging.DEBUG)
 
 logger = logging.getLogger(__name__)
 
-class Sniffer(IrLAP):
-    def _dispatch(self, frame: Frame) -> None:
-        logging.info(frame)
+
+class Echo(asyncio.Protocol):
+    def connection_made(self, transport: asyncio.Transport) -> None:
+        logger.info("Link up, max frame %d bytes", transport.get_extra_info("data_size"))
+        transport.write(b"hello")
+
+    def data_received(self, data: bytes) -> None:
+        logger.info("Received %s", data)
+
+    def connection_lost(self, exc: Exception | None) -> None:
+        logger.info("Link down: %s", exc)
 
 
 async def main() -> None:
-    import argparse
-
     parser = argparse.ArgumentParser()
     parser.add_argument("port", help="Serial port, e.g. COM3 or /dev/ttyUSB0")
-    parser.add_argument("--baud", type=int, default=9600)
     args = parser.parse_args()
 
-    protocol: IrLAP
-    transport, protocol = await serial_asyncio.create_serial_connection(
+    irlap: IrLAP
+    transport, irlap = await serial_asyncio.create_serial_connection(
         asyncio.get_running_loop(),
-        IrLAP,
+        lambda: IrLAP(Echo),
         args.port,
-        baudrate=args.baud,
+        baudrate=9600,
     )
 
-    await protocol.ready.wait()
+    devices = await irlap.discover()
+    logger.info("Found devices: %s", devices)
 
-    discovered = await protocol.discover()
-    logger.info("Found devices: %s", discovered)
-
-    if discovered:
-        await protocol.connect(discovered[0])
-        await protocol.send(b"\x00\x00")
+    if devices:
+        await irlap.connect(devices[0])
 
     try:
-        await asyncio.get_running_loop().create_future()  # run forever
-    except KeyboardInterrupt:
+        await asyncio.get_running_loop().create_future()
+    finally:
         transport.close()
 
 
