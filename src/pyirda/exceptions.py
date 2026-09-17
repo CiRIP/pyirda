@@ -1,0 +1,2 @@
+class IrdaException(Exception):
+    pass
