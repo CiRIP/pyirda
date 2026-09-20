@@ -303,14 +303,14 @@ class IrLMP(asyncio.Protocol):
         await self._link(address)
 
         if isinstance(sel, str):
-            sel = await self._resolve(address, sel)
+            sel = await self.resolve(address, sel)
 
         connection = LSAPConnection(self, self._free_sel(sel), sel, protocol_factory)
 
         return await connection.connect_request(data)
 
-    async def _resolve(self, address: int, service: str) -> int:
-        values = await self.ias.get_value_by_class(address, service, "IrDA:IrLMP:LsapSel")
+    async def resolve(self, address: int, service: str, attribute: str = "IrDA:IrLMP:LsapSel") -> int:
+        values = await self.ias.get_value_by_class(address, service, attribute)
 
         if not values:
             msg = f"No {service} service on {address:#010x}"

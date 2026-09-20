@@ -32,3 +32,4 @@ class Hints(IntFlag):
     LAN = 1 << 6
     TELEPHONY = 1 << 8
     FILE_SERVER = 1 << 9
+    OBEX = 1 << 13

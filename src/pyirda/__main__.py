@@ -1,59 +1,70 @@
 import argparse
 import asyncio
 import logging
+from pathlib import Path
 
 import serial_asyncio
 
 from .irlap import IrLAP
-from .irlmp import IrLMP
+from .irlmp import Hints, IrLMP
+from .obex import OBEX, Header, Response, Server
+from .obex.packet import Headers
+from .tinytp import TinyTP
 
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.INFO)
 
 logger = logging.getLogger(__name__)
 
 
-class Echo(asyncio.Protocol):
-    def connection_made(self, transport: asyncio.Transport) -> None:
-        logger.info("Connected, max %d bytes per write", transport.get_extra_info("data_size"))
-        transport.write(b"hello")
+class Inbox(Server):
+    def put(self, headers: Headers, body: bytes | None) -> int:
+        name = next((value for hi, value in headers if hi == Header.NAME), "unnamed")
 
-    def data_received(self, data: bytes) -> None:
-        logger.info("Received %s", data)
+        if body is None:
+            return Response.FORBIDDEN
 
-    def connection_lost(self, exc: Exception | None) -> None:
-        logger.info("Disconnected: %s", exc)
+        Path(Path(name).name).write_bytes(body)
+        logger.info("Received %s (%d bytes)", name, len(body))
+
+        return Response.SUCCESS
 
 
 async def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("port", help="Serial port, e.g. COM3 or /dev/ttyUSB0")
-    parser.add_argument("service", nargs="?", default="Echo", help="IAS class name or LSAP selector to connect to")
+    parser.add_argument(
+        "file", nargs="?", type=Path, help="File to send; without it, receive into the current directory"
+    )
     args = parser.parse_args()
 
     irlap = IrLAP()
-    irlmp = IrLMP(irlap, nickname="pyirda")
-    irlmp.listeners[0x05] = Echo
-    irlmp.ias.objects["Echo"] = {"IrDA:IrLMP:LsapSel": 0x05}
+    irlmp = IrLMP(irlap, nickname="pyirda", hints=Hints.COMPUTER | Hints.OBEX)
+    tinytp = TinyTP(irlmp)
+    irlmp.listeners[0x05] = tinytp.server(Inbox)
+    irlmp.ias.objects["OBEX"] = {"IrDA:TinyTP:LsapSel": 0x05}
 
     transport, _ = await serial_asyncio.create_serial_connection(
         asyncio.get_running_loop(), lambda: irlap, args.port, baudrate=9600
     )
 
+    try:
+        if args.file:
+            await send(irlmp, OBEX(tinytp), args.file)
+        else:
+            await asyncio.get_running_loop().create_future()
+    finally:
+        transport.close()
+
+
+async def send(irlmp: IrLMP, obex: OBEX, file: Path) -> None:
     devices = await irlmp.discover()
     logger.info("Found devices: %s", devices)
 
-    try:
-        service = int(args.service, 0)
-    except ValueError:
-        service = args.service
-
-    if devices:
-        await irlmp.connect(devices[0].address, service, Echo)
-
-    try:
-        await asyncio.get_running_loop().create_future()
-    finally:
-        transport.close()
+    device = next(device for device in devices if device.hints & Hints.OBEX)
+    client = await obex.connect(device.address)
+    await client.put(file.name, file.read_bytes())
+    await client.disconnect()
+    logger.info("Sent %s to %s", file.name, device.nickname)
 
 
 if __name__ == "__main__":
