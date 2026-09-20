@@ -94,11 +94,15 @@ class Secondary(Enum):
 
 class Link(asyncio.Transport):
     def __init__(self, irlap: "IrLAP") -> None:
-        super().__init__({"irlap": irlap, "data_size": irlap.theirs.data_size})
+        super().__init__({"irlap": irlap, "address": irlap.dst_device_address, "data_size": irlap.theirs.data_size})
         self._irlap = irlap
         self._closing = False
 
     def write(self, data: bytes) -> None:
+        if self.is_closing():
+            logger.debug("Dropping %d bytes written to a closing link", len(data))
+            return
+
         if len(data) > self._irlap.theirs.data_size:
             msg = f"Frame of {len(data)} bytes exceeds the negotiated {self._irlap.theirs.data_size}"
             raise ValueError(msg)
@@ -116,7 +120,7 @@ class Link(asyncio.Transport):
 class IrLAP(asyncio.Protocol):
     def __init__(
         self,
-        protocol_factory: Callable[[], asyncio.BaseProtocol],
+        protocol_factory: Callable[[], asyncio.BaseProtocol] | None = None,
         discovery_info: bytes = b"\x80 \x00TMGC",
         slots: int = 6,
         capabilities: NegotiationParameters = CAPABILITIES,
@@ -175,12 +179,12 @@ class IrLAP(asyncio.Protocol):
 
         return await self._discovering
 
-    async def connect(self, device: XIDResponseFrame) -> tuple[Link, asyncio.BaseProtocol]:
+    async def connect(self, address: int) -> tuple[Link, asyncio.BaseProtocol]:
         await self.ready.wait()
         self._require(State.NDM)
 
         self._connecting = asyncio.get_running_loop().create_future()
-        self._dispatch(ConnectRequest(address=device.src_device_address))
+        self._dispatch(ConnectRequest(address=address))
 
         return await self._connecting
 

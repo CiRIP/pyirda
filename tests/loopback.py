@@ -72,7 +72,7 @@ async def main(lose: bytes = b"") -> None:
     assert len(devices) == 1, devices
     assert devices[0].discovery_info == b"\x80\x00B"
 
-    link, protocol = await a.connect(devices[0])
+    link, protocol = await a.connect(devices[0].src_device_address)
     await asyncio.sleep(0.05)
     assert b.protocol is not None
 

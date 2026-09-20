@@ -1,14 +1,10 @@
-from typing import Self
-
-from pyirda.utils import _all_subclasses
+from pyirda.packet import Packet
 
 from .constants import BROADCAST
 from .negotiation import NegotiationParameters
 
 
-class Frame:
-    payload: bytearray
-
+class Frame(Packet):
     def __init__(
         self, address: int, command: bool, control: int, information: bytes | None = None, pf: bool = True
     ) -> None:
@@ -20,37 +16,6 @@ class Frame:
         if information:
             self.information = information
         self.pf = pf
-
-    def __repr__(self) -> str:
-        import inspect
-
-        props = {
-            name: getattr(self, name)
-            for name, _ in inspect.getmembers(type(self), lambda v: isinstance(v, property))
-            if name != "payload"
-        }
-        fields = ", ".join(f"{k}={v!r}" for k, v in props.items())
-        return f"{type(self).__name__}({fields})"
-
-    @classmethod
-    def parse(cls, data: bytes) -> "Frame":
-        frame = cls.from_bytes(data)
-        for subclass in _all_subclasses(cls):
-            frame.__class__ = subclass
-            if subclass.is_valid(frame):
-                return frame
-        frame.__class__ = cls
-        return frame
-
-    def is_valid(self) -> bool:
-        return True
-
-    @classmethod
-    def from_bytes(cls, data: bytes) -> Self:
-        frame = cls.__new__(cls)
-        frame.payload = bytearray(data)
-
-        return frame
 
     @property
     def address(self) -> int:

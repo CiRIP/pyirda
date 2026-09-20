@@ -4,18 +4,13 @@ from pyirda.events import Event, Request
 
 
 @dataclass(frozen=True)
-class DiscoveryRequest(Request):
-    pass
-
-
-@dataclass(frozen=True)
 class ConnectRequest(Request):
-    address: int
+    data: bytes
 
 
 @dataclass(frozen=True)
 class ConnectResponse(Request):
-    pass
+    data: bytes
 
 
 @dataclass(frozen=True)
@@ -29,25 +24,15 @@ class DataRequest(Request):
 
 
 @dataclass(frozen=True)
-class SlotTimerExpired(Event):
+class LSConnectConfirm(Event):
     pass
 
 
 @dataclass(frozen=True)
-class QueryTimerExpired(Event):
-    pass
+class LSDisconnectIndication(Event):
+    exc: Exception | None
 
 
 @dataclass(frozen=True)
-class PTimerExpired(Event):
-    pass
-
-
-@dataclass(frozen=True)
-class FTimerExpired(Event):
-    pass
-
-
-@dataclass(frozen=True)
-class WDTimerExpired(Event):
+class WatchdogExpired(Event):
     pass

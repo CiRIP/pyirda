@@ -1,0 +1,34 @@
+from enum import IntEnum, IntFlag
+
+LSAP_IAS = 0x00
+LSAP_MAX = 0x6F
+LSAP_CONNECTIONLESS = 0x70
+
+WATCHDOG_TIMEOUT = 20.0
+LINGER_TIMEOUT = 2.0
+
+
+class Reason(IntEnum):
+    USER_REQUEST = 0x01
+    UNEXPECTED_IRLAP_DISCONNECT = 0x02
+    FAILED_TO_ESTABLISH_IRLAP = 0x03
+    IRLAP_RESET = 0x04
+    LINK_MANAGEMENT_INITIATED = 0x05
+    DISCONNECTED = 0x06
+    NON_RESPONSIVE_CLIENT = 0x07
+    NO_PEER_MUX_CLIENT = 0x08
+    HALF_OPEN = 0x09
+    ILLEGAL_SOURCE_ADDRESS = 0x0A
+    UNSPECIFIED = 0xFF
+
+
+class Hints(IntFlag):
+    PNP = 1 << 0
+    PDA = 1 << 1
+    COMPUTER = 1 << 2
+    PRINTER = 1 << 3
+    MODEM = 1 << 4
+    FAX = 1 << 5
+    LAN = 1 << 6
+    TELEPHONY = 1 << 8
+    FILE_SERVER = 1 << 9
