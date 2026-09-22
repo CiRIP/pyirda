@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>IrDA OBEX</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        max-width: 48rem;
+        margin: 2rem auto;
+        padding: 0 1rem;
+      }
+      fieldset {
+        margin-bottom: 1rem;
+      }
+      fieldset:disabled {
+        opacity: 0.5;
+      }
+      label {
+        display: block;
+        margin: 0.5rem 0;
+      }
+      pre {
+        background: #f4f4f4;
+        padding: 1rem;
+        height: 16rem;
+        overflow: auto;
+        white-space: pre-wrap;
+      }
+      ul:empty::after {
+        content: "nothing yet";
+        color: gray;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>IrDA OBEX</h1>
+
+    <fieldset id="port">
+      <legend>Serial port</legend>
+      <label>
+        Baud rates to offer
+        <select id="baud">
+          <option value="2">9600</option>
+          <option value="6">9600, 19200</option>
+          <option value="14">9600 – 38400</option>
+          <option value="62">9600 – 115200</option>
+        </select>
+      </label>
+      <label><input type="checkbox" id="debug" /> Log frames to the console</label>
+      <button id="connect">Choose port</button>
+    </fieldset>
+
+    <fieldset id="link" disabled>
+      <legend>Send a file</legend>
+      <label>
+        Device
+        <select id="device">
+          <option value="">first device advertising OBEX</option>
+        </select>
+        <button id="discover">Discover</button>
+      </label>
+      <label>File <input type="file" id="file" /></label>
+      <button id="send">Send</button>
+    </fieldset>
+
+    <fieldset>
+      <legend>Received files</legend>
+      <ul id="inbox"></ul>
+    </fieldset>
+
+    <pre id="log"></pre>
+
+    <script type="module" src="/demo/main.ts"></script>
+  </body>
+</html>
