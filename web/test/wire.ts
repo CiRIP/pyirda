@@ -1,18 +1,20 @@
-import type { Port } from "../src/irlap/irlap.ts"
+import { Duplex } from "../src/connection.ts"
+import type { SirPort } from "../src/dongle/index.ts"
+import { INITIAL_BAUD_RATE } from "../src/irlap/constants.ts"
 import { log } from "../src/log.ts"
 
 log.enabled = Boolean(process.env.IRDA_DEBUG)
 
-export const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+export { sir } from "../src/dongle/sir.ts"
+export { sleep } from "../src/timer.ts"
 
-export class Wire implements Port {
-  readable: ReadableStream<Uint8Array> | null = null
-  writable: WritableStream<Uint8Array> | null = null
+export class Wire extends Duplex implements SirPort {
+  readonly baudRates = [2400, 9600, 19200, 38400, 57600, 115200]
+
   peer!: Wire
   lose?: Uint8Array
-  baudRate = 0
+  baudRate = INITIAL_BAUD_RATE
 
-  #controller?: ReadableStreamDefaultController<Uint8Array>
   #busyUntil = 0
 
   static pair(): [Wire, Wire] {
@@ -24,28 +26,15 @@ export class Wire implements Port {
     return [a, b]
   }
 
-  async open({ baudRate }: { baudRate: number }) {
+  async setSpeed(baudRate: number) {
     this.baudRate = baudRate
-    this.readable = new ReadableStream({
-      start: (controller) => {
-        this.#controller = controller
-      },
-      cancel: () => {
-        this.readable = null
-        this.#controller = undefined
-      },
-    })
-    this.writable = new WritableStream({ write: (data) => this.#transmit(data) })
   }
 
   async close() {
-    const controller = this.#controller
-    this.readable = null
-    this.writable = null
-    controller?.close()
+    this.end()
   }
 
-  #transmit(data: Uint8Array) {
+  protected write(data: Uint8Array) {
     if (this.lose && contains(data, this.lose)) {
       console.info("*** losing frame carrying", new TextDecoder().decode(this.lose))
       this.lose = undefined
@@ -58,8 +47,12 @@ export class Wire implements Port {
     setTimeout(() => this.peer.#deliver(data, baudRate), this.#busyUntil - now)
   }
 
+  protected disconnect() {
+    void this.close()
+  }
+
   #deliver(data: Uint8Array, baudRate: number) {
-    if (this.readable && this.baudRate === baudRate) this.#controller!.enqueue(data)
+    if (this.baudRate === baudRate) this.push(data)
   }
 }
 

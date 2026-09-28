@@ -1,5 +1,8 @@
+import type { Dongle } from "../src/dongle/index.ts"
+import { STIR421X_PATCHES } from "../src/dongle/firmware/index.ts"
+import { KS959, MCS7780, SerialDongle, sir, STIR4200, STIR421X } from "../src/dongle/index.ts"
 import { IrLAP } from "../src/irlap/irlap.ts"
-import { Parameters } from "../src/irlap/negotiation.ts"
+import { baudRatePv, Parameters } from "../src/irlap/negotiation.ts"
 import { Hints, IrLMP, type Device } from "../src/irlmp/index.ts"
 import { formatAddress } from "../src/irlmp/irlmp.ts"
 import { log } from "../src/log.ts"
@@ -20,22 +23,45 @@ let obex: OBEX
 
 $("debug").onchange = () => (log.enabled = $<HTMLInputElement>("debug").checked)
 
-$("connect").onclick = guarded(async () => {
-  const port = await navigator.serial.requestPort()
-  const capabilities = new Parameters({ baudRatePv: Number($<HTMLSelectElement>("baud").value) })
-  const irlap = new IrLAP(port, { capabilities })
+$("serial").onclick = guarded(async () => start(sir(await SerialDongle.open(await navigator.serial.requestPort()))))
+
+$("ks959").onclick = guarded(async () =>
+  start(sir(await KS959.open(await navigator.usb.requestDevice({ filters: KS959.filters })))),
+)
+
+$("stir4200").onclick = guarded(async () =>
+  start(sir(await STIR4200.open(await navigator.usb.requestDevice({ filters: STIR4200.filters })))),
+)
+
+$("mcs7780").onclick = guarded(async () =>
+  start(sir(await MCS7780.open(await navigator.usb.requestDevice({ filters: MCS7780.filters })))),
+)
+
+$("stir421x").onclick = guarded(async () =>
+  start(await STIR421X.open(await navigator.usb.requestDevice({ filters: STIR421X.filters }), STIR421X_PATCHES)),
+)
+
+const offered = (baudRates: number[]) =>
+  baudRates.filter((baudRate) => baudRate <= Number($<HTMLSelectElement>("baud").value))
+
+function start(dongle: Dongle) {
+  const baudRates = offered(dongle.baudRates)
+  const irlap = new IrLAP(dongle, { capabilities: new Parameters({ baudRatePv: baudRatePv(baudRates) }) })
   irlmp = new IrLMP(irlap, { nickname: "web", hints: Hints.COMPUTER | Hints.OBEX })
   const tinytp = new TinyTP(irlmp)
   obex = new OBEX(tinytp)
 
-  irlmp.listeners.set(0x05, tinytp.server(obex.server({ put: receive })))
+  const inbox = obex.server({
+    put: receive,
+    progress: (opcode, headers, transferred, total) => showProgress("receiving", transferred, total),
+  })
+  irlmp.listeners.set(0x05, tinytp.server(inbox))
   irlmp.ias.objects.OBEX = { "IrDA:TinyTP:LsapSel": 0x05 }
 
-  await irlap.open()
   $<HTMLFieldSetElement>("port").disabled = true
   $<HTMLFieldSetElement>("link").disabled = false
-  print("Port open, listening for incoming files")
-})
+  print(`Dongle ready, offering ${baudRates.join(", ")} baud, listening for incoming files`)
+}
 
 $("discover").onclick = guarded(async () => {
   const devices = await irlmp.discover()
@@ -52,7 +78,9 @@ $("send").onclick = guarded(async () => {
   print(`Sending ${file.name} (${file.size} bytes) to ${formatAddress(address)}`)
 
   const client = await obex.connect(address)
-  await client.put(file.name, new Uint8Array(await file.arrayBuffer()))
+  await client.put(file.name, new Uint8Array(await file.arrayBuffer()), {
+    progress: (transferred, total) => showProgress("sending", transferred, total),
+  })
   await client.disconnect()
   print("Sent")
 })
@@ -76,6 +104,13 @@ function receive(headers: Headers, content: Uint8Array | null): number {
   print(`Received ${name} (${content.length} bytes)`)
 
   return ResponseCode.SUCCESS
+}
+
+function showProgress(id: string, transferred: number, total?: number) {
+  const bar = $<HTMLProgressElement>(id)
+
+  if (total) bar.value = transferred / total
+  else bar.removeAttribute("value")
 }
 
 const describe = (device: Device) =>

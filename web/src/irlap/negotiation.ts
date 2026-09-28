@@ -106,6 +106,9 @@ const FIELDS: Record<number, Field> = {
   [PI_LINK_DISCONNECT]: "linkDisconnectPv",
 }
 
+export const baudRatePv = (rates: number[]) =>
+  BAUD_RATES.reduce((pv, rate, bit) => (rates.includes(rate) ? pv | (1 << bit) : pv), 0)
+
 export const CAPABILITIES = new Parameters()
 
 export const CONTENTION = new Parameters({

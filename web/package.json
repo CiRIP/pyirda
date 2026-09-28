@@ -17,6 +17,7 @@
   "devDependencies": {
     "@types/node": "^25",
     "@types/w3c-web-serial": "^1",
+    "@types/w3c-web-usb": "^1.0.14",
     "prettier": "^3.9.8",
     "typescript": "^5",
     "vite": "^7"

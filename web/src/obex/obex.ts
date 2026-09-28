@@ -1,6 +1,6 @@
 import { match, P } from "ts-pattern"
 
-import { ascii, chunks, concat, EMPTY, u16, view } from "../bytes.ts"
+import { ascii, chunks, concat, EMPTY, equals, u16, view } from "../bytes.ts"
 import { ConnectionClosed, IrdaError } from "../errors.ts"
 import { log } from "../log.ts"
 import type { Listener, TinyTP, TTPConnection } from "../tinytp/tinytp.ts"
@@ -27,6 +27,7 @@ import {
 } from "./packet.ts"
 
 const PACKET_OVERHEAD = 3
+const CONNECTION_ID = 1
 const OPCODES = new Set<number>(Object.values(Opcode))
 
 export class OBEXError extends IrdaError {
@@ -75,13 +76,13 @@ class Session {
     return value
   }
 
-  protected packetsFor(head: Headers, content: Uint8Array | null, opcode: number, lastOpcode: number): Uint8Array[] {
+  protected packetsFor(head: Headers, content: Uint8Array | null, opcode: number, lastOpcode: number): Outgoing[] {
     const budget = this.peerMaxPacketLength - PACKET_OVERHEAD
-    let encoded = encodeHeaders(head)
+    let encoded: Uint8Array = encodeHeaders(head)
 
-    if (content === null) return [encodePacket(lastOpcode, encoded)]
+    if (content === null) return [[encodePacket(lastOpcode, encoded), 0]]
 
-    const result: Uint8Array[] = []
+    const result: Outgoing[] = []
     let position = 0
 
     for (;;) {
@@ -97,9 +98,12 @@ class Session {
       position += chunk.length
       const last = position >= content.length
 
-      result.push(
-        encodePacket(last ? lastOpcode : opcode, encoded, encodeHeader(last ? Header.END_OF_BODY : Header.BODY, chunk)),
+      const packet = encodePacket(
+        last ? lastOpcode : opcode,
+        encoded,
+        encodeHeader(last ? Header.END_OF_BODY : Header.BODY, chunk),
       )
+      result.push([packet, position])
       encoded = EMPTY
 
       if (last) return result
@@ -107,9 +111,15 @@ class Session {
   }
 }
 
+export type Progress = (transferred: number, total?: number) => void
+
+type Outgoing = [packet: Uint8Array, transferred: number]
+
 export interface ObjectOptions {
   type?: Uint8Array | string
   headers?: Headers
+  progress?: Progress
+  signal?: AbortSignal
 }
 
 export class Client extends Session {
@@ -140,22 +150,30 @@ export class Client extends Session {
   async put(
     name?: string,
     content: Uint8Array | null = EMPTY,
-    { type, headers = [] }: ObjectOptions = {},
+    { type, headers = [], progress, signal }: ObjectOptions = {},
   ): Promise<Headers> {
+    signal?.throwIfAborted()
     const head = this.#headers([...describe(name, type, content), ...headers])
     const packets = this.packetsFor(head, content, Opcode.PUT, Opcode.PUT | FINAL)
+    const [last, lastTransferred] = packets.at(-1)!
 
-    for (const packet of packets.slice(0, -1)) {
+    for (const [packet, transferred] of packets.slice(0, -1)) {
       await this.#request(packet, ResponseCode.CONTINUE)
+      progress?.(transferred, content?.length)
+      await this.#stopIfAborted(signal)
     }
 
-    return decodeHeaders((await this.#request(packets.at(-1)!)).payload)
+    const response = await this.#request(last)
+    progress?.(lastTransferred, content?.length)
+
+    return decodeHeaders(response.payload)
   }
 
   async get(
     name?: string,
-    { type, headers = [] }: ObjectOptions = {},
+    { type, headers = [], progress, signal }: ObjectOptions = {},
   ): Promise<{ headers: Headers; content: Uint8Array }> {
+    signal?.throwIfAborted()
     let packet = encodePacket(Opcode.GET | FINAL, encodeHeaders(this.#headers([...describe(name, type), ...headers])))
     const collected: Headers = []
     let content = EMPTY
@@ -164,10 +182,12 @@ export class Client extends Session {
       const response = await this.#request(packet, ResponseCode.CONTINUE)
       const responseHeaders = decodeHeaders(response.payload)
 
-      collected.push(...responseHeaders.filter(([id]) => id !== Header.BODY && id !== Header.END_OF_BODY))
+      collected.push(...withoutBody(responseHeaders))
       content = concat(content, body(responseHeaders) ?? EMPTY)
+      progress?.(content.length, declaredLength(collected))
 
       if (response.code !== ResponseCode.CONTINUE) return { headers: collected, content }
+      await this.#stopIfAborted(signal)
 
       packet = encodePacket(Opcode.GET | FINAL, encodeHeaders(this.#headers()))
     }
@@ -180,8 +200,11 @@ export class Client extends Session {
     return decodeHeaders((await this.#request(packet)).payload.subarray(2))
   }
 
-  async abort(headers: Headers = []) {
-    await this.#request(encodePacket(Opcode.ABORT | FINAL, encodeHeaders(this.#headers(headers))))
+  async #stopIfAborted(signal?: AbortSignal) {
+    if (!signal?.aborted) return
+
+    await this.#request(encodePacket(Opcode.ABORT | FINAL, encodeHeaders(this.#headers())))
+    signal.throwIfAborted()
   }
 
   async #request(packet: Uint8Array, ...also: number[]): Promise<Packet> {
@@ -217,6 +240,8 @@ export interface Handlers {
   put?(headers: Headers, content: Uint8Array | null): number | Promise<number>
   get?(headers: Headers): OBEXObject | number | Promise<OBEXObject | number>
   setpath?(name: string | undefined, flags: number, headers: Headers): number | Promise<number>
+  progress?(opcode: number, headers: Headers, transferred: number, total?: number): void
+  target?: Uint8Array
 }
 
 type State = "IDLE" | "PUT" | "GET_REQUEST" | "GET_RESPONSE"
@@ -226,7 +251,8 @@ export class Server extends Session {
   state: State = "IDLE"
 
   #headers: Headers = []
-  #reply: Uint8Array[] = []
+  #reply: Outgoing[] = []
+  #replyLength = 0
 
   constructor(connection: TTPConnection, handlers: Handlers, maxPacketLength = DEFAULT_MAX_PACKET_LENGTH) {
     super(connection, maxPacketLength)
@@ -250,7 +276,17 @@ export class Server extends Session {
     await match<[State, number, boolean]>([state, packet.code, packet.final])
       .with(["IDLE", Opcode.CONNECT, true], async () => {
         this.peerMaxPacketLength = Math.max(view(packet.payload).getUint16(2), MIN_PACKET_LENGTH)
-        await this.send(encodePacket(ResponseCode.SUCCESS | FINAL, connectFields(this.maxPacketLength)))
+        const target = header(decodeHeaders(packet.payload.subarray(4)), Header.TARGET)
+        const directed = target instanceof Uint8Array && this.handlers.target && equals(target, this.handlers.target)
+        const reply: Headers = directed
+          ? [
+              [Header.CONNECTION_ID, CONNECTION_ID],
+              [Header.WHO, target],
+            ]
+          : []
+        await this.send(
+          encodePacket(ResponseCode.SUCCESS | FINAL, connectFields(this.maxPacketLength), encodeHeaders(reply)),
+        )
 
         this.state = "IDLE"
       })
@@ -263,6 +299,7 @@ export class Server extends Session {
 
       .with([P.union("IDLE", "PUT"), Opcode.PUT, false], async () => {
         this.#headers.push(...headers())
+        this.#progress(Opcode.PUT, bodyLength(this.#headers), declaredLength(this.#headers))
         await this.#respond(ResponseCode.CONTINUE)
 
         this.state = "PUT"
@@ -270,8 +307,9 @@ export class Server extends Session {
 
       .with([P.union("IDLE", "PUT"), Opcode.PUT, true], async () => {
         this.#headers.push(...headers())
-        const rest = this.#headers.filter(([id]) => id !== Header.BODY && id !== Header.END_OF_BODY)
-        await this.#respond(await (this.handlers.put?.(rest, body(this.#headers)) ?? ResponseCode.NOT_IMPLEMENTED))
+        this.#progress(Opcode.PUT, bodyLength(this.#headers), declaredLength(this.#headers))
+        const put = this.handlers.put?.(withoutBody(this.#headers), body(this.#headers))
+        await this.#respond(await (put ?? ResponseCode.NOT_IMPLEMENTED))
 
         this.state = "IDLE"
       })
@@ -288,13 +326,15 @@ export class Server extends Session {
         const result = await (this.handlers.get?.(this.#headers) ?? ResponseCode.NOT_FOUND)
 
         if (typeof result === "number") await this.#respond(result)
-        else
+        else {
           this.#reply = this.packetsFor(
             result.headers,
             result.content,
             ResponseCode.CONTINUE | FINAL,
             ResponseCode.SUCCESS | FINAL,
           )
+          this.#replyLength = result.content.length
+        }
 
         await this.#replyNext()
 
@@ -351,8 +391,16 @@ export class Server extends Session {
   }
 
   async #replyNext() {
-    const packet = this.#reply.shift()
-    if (packet) await this.send(packet)
+    const next = this.#reply.shift()
+    if (!next) return
+
+    const [packet, transferred] = next
+    await this.send(packet)
+    this.#progress(Opcode.GET, transferred, this.#replyLength)
+  }
+
+  #progress(opcode: number, transferred: number, total?: number) {
+    this.handlers.progress?.(opcode, withoutBody(this.#headers), transferred, total)
   }
 }
 
@@ -402,6 +450,18 @@ function describe(name?: string, type?: Uint8Array | string, content?: Uint8Arra
   if (content?.length) headers.push([Header.LENGTH, content.length])
 
   return headers
+}
+
+const isBody = ([id]: Headers[number]) => id === Header.BODY || id === Header.END_OF_BODY
+
+const withoutBody = (headers: Headers) => headers.filter((entry) => !isBody(entry))
+
+const bodyLength = (headers: Headers) =>
+  headers.filter(isBody).reduce((length, [, value]) => length + (value as Uint8Array).length, 0)
+
+function declaredLength(headers: Headers): number | undefined {
+  const length = header(headers, Header.LENGTH)
+  return typeof length === "number" ? length : undefined
 }
 
 const success = (code: number) => code >= ResponseCode.SUCCESS && code < ResponseCode.MULTIPLE_CHOICES

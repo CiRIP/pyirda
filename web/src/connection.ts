@@ -1,8 +1,6 @@
-export abstract class Connection {
+export abstract class Duplex<W = Uint8Array> {
   readonly readable: ReadableStream<Uint8Array>
-  readonly writable: WritableStream<Uint8Array>
-  abstract readonly address: number
-  abstract readonly dataSize: number
+  readonly writable: WritableStream<W>
 
   #controller!: ReadableStreamDefaultController<Uint8Array>
   #open = true
@@ -32,9 +30,13 @@ export abstract class Connection {
     })
   }
 
-  protected abstract write(data: Uint8Array): void | Promise<void>
+  protected abstract write(data: W): void | Promise<void>
 
-  protected abstract disconnect(): void
+  protected abstract disconnect(): void | Promise<void>
+
+  protected get open() {
+    return this.#open
+  }
 
   push(data: Uint8Array) {
     if (this.#open) this.#controller.enqueue(data)
@@ -47,4 +49,9 @@ export abstract class Connection {
     if (error) this.#controller.error(error)
     else this.#controller.close()
   }
+}
+
+export abstract class Connection extends Duplex {
+  abstract readonly address: number
+  abstract readonly dataSize: number
 }

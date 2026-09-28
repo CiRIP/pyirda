@@ -6,7 +6,7 @@ import { IrLAP } from "../src/irlap/irlap.ts"
 import { Hints, IrLMP, type LSAPConnection } from "../src/irlmp/index.ts"
 import { LINGER_TIMEOUT } from "../src/irlmp/constants.ts"
 import { Chat } from "./chat.ts"
-import { sleep, Wire } from "./wire.ts"
+import { sir, sleep, Wire } from "./wire.ts"
 
 test("LSAP connections, IAS lookups and link lifecycle", async () => {
   const aSends = ["a1", "a2", "a3", "a4", "a5"].map(ascii)
@@ -14,12 +14,10 @@ test("LSAP connections, IAS lookups and link lifecycle", async () => {
   const blob = new Uint8Array(768).map((_, i) => i)
 
   const [ab, ba] = Wire.pair()
-  const aLap = new IrLAP(ab)
+  const aLap = new IrLAP(sir(ab))
   const a = new IrLMP(aLap, { nickname: "A" })
-  const bLap = new IrLAP(ba)
+  const bLap = new IrLAP(sir(ba))
   const b = new IrLMP(bLap, { nickname: "B" })
-  await aLap.open()
-  await bLap.open()
 
   const accepted: Chat<LSAPConnection>[] = []
   b.listeners.set(0x05, (connection) => accepted.push(new Chat(connection, bSends)))

@@ -4,10 +4,11 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises"
 import net from "node:net"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { Duplex } from "node:stream"
 import { test } from "node:test"
 
-import { IrLAP, type Port } from "../src/irlap/irlap.ts"
+import { Duplex } from "../src/connection.ts"
+import { sir, type SirPort } from "../src/dongle/index.ts"
+import { IrLAP } from "../src/irlap/irlap.ts"
 import { Hints, IrLMP } from "../src/irlmp/index.ts"
 import { Header, OBEX, ResponseCode, header } from "../src/obex/index.ts"
 import { TinyTP } from "../src/tinytp/index.ts"
@@ -17,25 +18,32 @@ const REPO = path.resolve(import.meta.dirname, "../..")
 
 const pattern = (length: number) => new Uint8Array(length).map((_, i) => (i * 7) & 0xff)
 
-class SocketPort implements Port {
-  readable: ReadableStream<Uint8Array> | null = null
-  writable: WritableStream<Uint8Array> | null = null
-  #socket: Promise<net.Socket>
+class SocketDongle extends Duplex implements SirPort {
+  readonly baudRates = [9600]
 
-  constructor(socket: Promise<net.Socket>) {
+  #socket: net.Socket
+
+  constructor(socket: net.Socket) {
+    super()
     this.#socket = socket
+    socket.on("data", (data: Uint8Array) => this.push(data))
+    socket.on("close", () => this.end())
+    socket.on("error", (error) => this.end(error))
   }
 
-  async open() {
-    const { readable, writable } = Duplex.toWeb(await this.#socket)
-    this.readable = readable as unknown as ReadableStream<Uint8Array>
-    this.writable = writable as unknown as WritableStream<Uint8Array>
-  }
+  async setSpeed() {}
 
   async close() {
-    ;(await this.#socket).destroy()
-    this.readable = null
-    this.writable = null
+    this.#socket.destroy()
+    this.end()
+  }
+
+  protected write(data: Uint8Array) {
+    this.#socket.write(data)
+  }
+
+  protected disconnect() {
+    void this.close()
   }
 }
 
@@ -55,8 +63,8 @@ function python(args: string[], cwd: string): ChildProcess {
   })
 }
 
-function stack(port: Port) {
-  const irlap = new IrLAP(port)
+function stack(socket: net.Socket) {
+  const irlap = new IrLAP(sir(new SocketDongle(socket)))
   const irlmp = new IrLMP(irlap, { nickname: "web", hints: Hints.COMPUTER | Hints.OBEX })
   const tinytp = new TinyTP(irlmp)
 
@@ -66,12 +74,10 @@ function stack(port: Port) {
 test("sends a file to the Python inbox", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "pyirda-"))
   const { port, socket, server } = await line()
-  const { irlap, irlmp, obex } = stack(new SocketPort(socket))
   const child = python([`socket://127.0.0.1:${port}`], dir)
+  const { irlap, irlmp, obex } = stack(await socket)
 
   try {
-    await irlap.open()
-
     const device = (await irlmp.discover()).find((device) => device.hints & Hints.OBEX)
     assert.ok(device)
     assert.equal(device.nickname, "pyirda")
@@ -95,7 +101,8 @@ test("receives a file from the Python client", async () => {
   await writeFile(path.join(dir, "send.bin"), content)
 
   const { port, socket, server } = await line()
-  const { irlap, irlmp, tinytp, obex } = stack(new SocketPort(socket))
+  const child = python([`socket://127.0.0.1:${port}`, path.join(dir, "send.bin")], dir)
+  const { irlap, irlmp, tinytp, obex } = stack(await socket)
   const received = Promise.withResolvers<{ name: unknown; content: Uint8Array | null }>()
 
   irlmp.listeners.set(
@@ -111,11 +118,7 @@ test("receives a file from the Python client", async () => {
   )
   irlmp.ias.objects.OBEX = { "IrDA:TinyTP:LsapSel": 0x05 }
 
-  const child = python([`socket://127.0.0.1:${port}`, path.join(dir, "send.bin")], dir)
-
   try {
-    await irlap.open()
-
     const result = await received.promise
     assert.equal(result.name, "send.bin")
     assert.deepEqual(result.content, content)

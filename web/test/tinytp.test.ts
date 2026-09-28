@@ -8,20 +8,18 @@ import { LINGER_TIMEOUT } from "../src/irlmp/constants.ts"
 import { INITIAL_CREDIT } from "../src/tinytp/pdu.ts"
 import { TinyTP, type TTPConnection } from "../src/tinytp/index.ts"
 import { Chat } from "./chat.ts"
-import { sleep, Wire } from "./wire.ts"
+import { sir, sleep, Wire } from "./wire.ts"
 
 const pattern = (length: number) => new Uint8Array(length).map((_, i) => i)
 
 test("credit flow and segmentation", async () => {
   const [ab, ba] = Wire.pair()
-  const aLap = new IrLAP(ab)
+  const aLap = new IrLAP(sir(ab))
   const a = new IrLMP(aLap, { nickname: "A" })
   const aTtp = new TinyTP(a)
-  const bLap = new IrLAP(ba)
+  const bLap = new IrLAP(sir(ba))
   const b = new IrLMP(bLap, { nickname: "B" })
   const bTtp = new TinyTP(b)
-  await aLap.open()
-  await bLap.open()
 
   const accepted: Chat<TTPConnection>[] = []
   b.listeners.set(

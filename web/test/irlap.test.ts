@@ -4,7 +4,7 @@ import { test } from "node:test"
 import { ascii } from "../src/bytes.ts"
 import { IrLAP, type Link } from "../src/irlap/irlap.ts"
 import { Parameters } from "../src/irlap/negotiation.ts"
-import { sleep, Wire } from "./wire.ts"
+import { sir, sleep, Wire } from "./wire.ts"
 
 async function exchange(link: Link, send: Uint8Array[], expect: number): Promise<Uint8Array[]> {
   const writer = link.writable.getWriter()
@@ -40,10 +40,8 @@ async function scenario(lose?: string) {
   if (lose) ab.lose = ascii(lose)
 
   let bLink: Link | undefined
-  const a = new IrLAP(ab, { discoveryInfo: Uint8Array.of(0x80, 0x00, 0x41) })
-  const b = new IrLAP(ba, { discoveryInfo: Uint8Array.of(0x80, 0x00, 0x42), listener: (link) => (bLink = link) })
-  await a.open()
-  await b.open()
+  const a = new IrLAP(sir(ab), { discoveryInfo: Uint8Array.of(0x80, 0x00, 0x41) })
+  const b = new IrLAP(sir(ba), { discoveryInfo: Uint8Array.of(0x80, 0x00, 0x42), listener: (link) => (bLink = link) })
 
   const devices = await a.discover()
   assert.equal(devices.length, 1)
@@ -77,10 +75,8 @@ test("switches to the negotiated baud rate and back", async () => {
   const [ab, ba] = Wire.pair()
   const capabilities = new Parameters({ baudRatePv: 0b00100010 })
   let bLink: Link | undefined
-  const a = new IrLAP(ab, { capabilities })
-  const b = new IrLAP(ba, { capabilities, listener: (link) => (bLink = link) })
-  await a.open()
-  await b.open()
+  const a = new IrLAP(sir(ab), { capabilities })
+  const b = new IrLAP(sir(ba), { capabilities, listener: (link) => (bLink = link) })
 
   const [device] = await a.discover()
   const link = await a.connect(device.srcDeviceAddress)

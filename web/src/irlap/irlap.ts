@@ -1,15 +1,14 @@
 import { match, P } from "ts-pattern"
 
-import { concat, EMPTY, hex, view } from "../bytes.ts"
+import { EMPTY, hex } from "../bytes.ts"
 import { Connection } from "../connection.ts"
+import type { Dongle, Transmission } from "../dongle/dongle.ts"
 import { IrdaError } from "../errors.ts"
 import { log } from "../log.ts"
 import { Timer } from "../timer.ts"
 import {
-  BOF,
   BROADCAST,
-  CE,
-  EOF,
+  CONTENTION_XBOFS,
   F_TIMEOUT,
   FRAME_OVERHEAD,
   INITIAL_BAUD_RATE,
@@ -18,19 +17,10 @@ import {
   RETRY_COUNT,
   SLOT_TIMEOUT,
   WD_TIMEOUT,
-  XBOF,
   XID_BROADCAST,
 } from "./constants.ts"
-import { crc16 } from "./crc.ts"
 import { decode, encode, RR, U, type Frame, type IFrame, type UFrame } from "./frame.ts"
-import { CAPABILITIES, CONTENTION, NegotiationError, type Parameters } from "./negotiation.ts"
-
-export interface Port {
-  readonly readable: ReadableStream<Uint8Array> | null
-  readonly writable: WritableStream<Uint8Array> | null
-  open(options: { baudRate: number }): Promise<void>
-  close(): Promise<void>
-}
+import { baudRatePv, CONTENTION, NegotiationError, Parameters } from "./negotiation.ts"
 
 export type XIDFrame = Extract<UFrame, { kind: "XID" }>
 type SNRMFrame = Extract<UFrame, { kind: "SNRM" }>
@@ -91,7 +81,7 @@ export class Link extends Connection {
 }
 
 export class IrLAP {
-  readonly port: Port
+  readonly dongle: Dongle
   listener?: (link: Link) => void
   discoveryInfo: Uint8Array
   capabilities: Parameters
@@ -106,10 +96,8 @@ export class IrLAP {
   vr = 0
 
   #baudRate = INITIAL_BAUD_RATE
-  #reader?: ReadableStreamDefaultReader<Uint8Array>
-  #writer?: WritableStreamDefaultWriter<Uint8Array>
+  #writer: WritableStreamDefaultWriter<Transmission>
   #tx = Promise.resolve()
-  #rx = EMPTY
   #txEnd = 0
   #turnaround = false
 
@@ -144,26 +132,22 @@ export class IrLAP {
     () => this.#transmissionRemaining(),
   )
 
-  constructor(port: Port, options: Options = {}) {
-    this.port = port
+  constructor(dongle: Dongle, options: Options = {}) {
+    this.dongle = dongle
     this.listener = options.listener
     this.discoveryInfo = options.discoveryInfo ?? Uint8Array.of(0x80, 0x20, 0x00, ...new TextEncoder().encode("irda"))
-    this.capabilities = options.capabilities ?? CAPABILITIES
+    this.capabilities = options.capabilities ?? new Parameters({ baudRatePv: baudRatePv(dongle.baudRates) })
     this.#slotCount = options.slots ?? 6
+    this.#writer = dongle.writable.getWriter()
+
+    void this.#listen()
   }
 
   // --- service interface ---
 
-  async open() {
-    await this.port.open({ baudRate: this.#baudRate })
-    this.#attach()
-  }
-
   async close() {
-    await this.#detach()
-    await this.port.close()
-    this.#baudRate = INITIAL_BAUD_RATE
-    this.#reset(new IrdaError("Port closed"))
+    await this.dongle.close()
+    this.#reset(new IrdaError("Dongle closed"))
   }
 
   async discover(): Promise<XIDFrame[]> {
@@ -185,7 +169,6 @@ export class IrLAP {
   }
 
   #require(state: State) {
-    if (!this.#writer) throw new IrdaError("Port is not open")
     if (this.state !== state) throw new IrdaError(`Cannot do that while in ${this.state}`)
   }
 
@@ -199,124 +182,59 @@ export class IrLAP {
     this.#dispatch({ request: "disconnect" })
   }
 
-  // --- serial side ---
-
-  #attach() {
-    this.#writer = this.port.writable!.getWriter()
-    void this.#listen()
-  }
-
-  async #detach() {
-    await this.#writer?.close().catch(() => {})
-    this.#writer = undefined
-    await this.#reader?.cancel().catch(() => {})
-  }
+  // --- dongle side ---
 
   async #listen() {
-    reading: for (;;) {
-      const readable = this.port.readable
-      if (!readable) break
+    let failure: unknown
 
-      this.#reader = readable.getReader()
-
-      try {
-        for (;;) {
-          const { value, done } = await this.#reader.read()
-          if (done) break reading
-          this.#receive(value)
-        }
-      } catch (error) {
-        log.debug("Read error", error)
-        if (this.port.readable === readable) break
-      } finally {
-        this.#reader.releaseLock()
-      }
+    try {
+      for await (const data of this.dongle.readable) this.#receive(data)
+    } catch (error) {
+      failure = error
     }
 
-    if (this.#writer) {
-      this.#writer = undefined
-      this.#reset(new IrdaError("Port closed"))
-    }
+    this.#reset(failure instanceof Error ? failure : new IrdaError("Dongle closed"))
   }
 
   #receive(data: Uint8Array) {
-    this.#rx = concat(this.#rx, data)
+    const frame = decode(data)
 
-    for (const frame of this.#extractFrames()) {
-      this.#dispatch(frame)
-    }
-  }
-
-  #extractFrames(): Frame[] {
-    const frames: Frame[] = []
-
-    for (;;) {
-      const start = this.#rx.indexOf(BOF)
-      if (start === -1) {
-        this.#rx = EMPTY
-        break
-      }
-
-      this.#rx = this.#rx.subarray(start)
-
-      const end = this.#rx.indexOf(EOF, 1)
-      if (end === -1) break
-
-      const raw = this.#rx.subarray(1, end)
-      this.#rx = this.#rx.subarray(end + 1)
-
-      const frame = this.#decode(unstuff(trimBofs(raw)))
-      if (frame) frames.push(frame)
-      else log.debug("Dropping malformed frame", hex(raw))
-    }
-
-    return frames
-  }
-
-  #decode(payload: Uint8Array): Frame | undefined {
-    if (payload.length < 2) return
-
-    const data = payload.subarray(0, -2)
-    const fcs = view(payload).getUint16(payload.length - 2, true)
-
-    return fcs === crc16(data) ? decode(data) : undefined
+    if (frame) this.#dispatch(frame)
+    else log.debug("Dropping malformed frame", hex(data))
   }
 
   #send(frame: Frame) {
     log.debug("<---", frame)
 
-    const raw = concat(this.#bofs(), frameToBytes(frame))
-    this.#queue(async () => this.#writer?.write(raw))
+    const transmission = {
+      frame: encode(frame),
+      xbofs: this.#xbofs(),
+      turnaround: this.#turnaround ? this.theirs.minTurnAroundMs : 0,
+    }
+    this.#queue(() => this.#writer.write(transmission))
 
-    this.#txEnd = Math.max(performance.now(), this.#txEnd) + (raw.length * 10_000) / this.#baudRate
+    const bytes = transmission.xbofs + transmission.frame.length + FRAME_OVERHEAD
+    this.#txEnd = Math.max(performance.now(), this.#txEnd) + transmission.turnaround + (bytes * 10_000) / this.#baudRate
     this.#turnaround = false
   }
 
   #queue(action: () => Promise<void>) {
-    this.#tx = this.#tx.then(action).catch((error) => console.warn("Port write failed", error))
+    this.#tx = this.#tx.then(action).catch((error) => log.debug("Dongle write failed", error))
   }
 
   #setBaudRate(baudRate: number) {
     if (baudRate === this.#baudRate) return
 
     this.#queue(async () => {
-      await this.#detach()
-      await new Promise((resolve) => setTimeout(resolve, this.#transmissionRemaining()))
-      await this.port.close()
-      await this.port.open({ baudRate })
+      await this.dongle.setSpeed(baudRate)
       this.#baudRate = baudRate
-      this.#attach()
     })
   }
 
-  #bofs(): Uint8Array {
-    let count = Math.floor((this.theirs.additionalBofsAt115200 * this.#baudRate) / 115200)
+  #xbofs(): number {
+    if (this.theirs === CONTENTION) return CONTENTION_XBOFS
 
-    if (this.#turnaround) {
-      count += Math.ceil((this.theirs.minTurnAroundMs * this.#baudRate) / 10_000)
-    }
-
-    return new Uint8Array(count).fill(XBOF)
+    return Math.floor((this.theirs.additionalBofsAt115200 * this.#baudRate) / 115200)
   }
 
   #transmissionRemaining(): number {
@@ -1154,7 +1072,7 @@ export class IrLAP {
 
   #takeWindow(): Uint8Array[] {
     let budget = Math.floor((this.#baudRate * this.theirs.maxTurnAroundMs) / 10_000)
-    const overhead = FRAME_OVERHEAD + this.#bofs().length
+    const overhead = FRAME_OVERHEAD + this.#xbofs()
     const window = [this.#pending.shift()!]
 
     while (this.#pending.length && window.length < this.theirs.windowSize) {
@@ -1236,43 +1154,4 @@ export class IrLAP {
   #unitdataIndication(data: Uint8Array) {
     log.debug("Received unit data", hex(data))
   }
-}
-
-function trimBofs(data: Uint8Array): Uint8Array {
-  let start = 0
-  let end = data.length
-
-  while (start < end && data[start] === XBOF) start++
-  while (end > start && data[end - 1] === XBOF) end--
-
-  return data.subarray(start, end)
-}
-
-function stuff(data: Uint8Array): Uint8Array {
-  const out: number[] = []
-
-  for (const byte of data) {
-    if (byte === BOF || byte === EOF || byte === CE) out.push(CE, byte ^ 0x20)
-    else out.push(byte)
-  }
-
-  return Uint8Array.from(out)
-}
-
-function unstuff(data: Uint8Array): Uint8Array {
-  const out: number[] = []
-
-  for (let i = 0; i < data.length; i++) {
-    out.push(data[i] === CE ? data[++i] ^ 0x20 : data[i])
-  }
-
-  return Uint8Array.from(out)
-}
-
-function frameToBytes(frame: Frame): Uint8Array {
-  const payload = encode(frame)
-  const fcs = new Uint8Array(2)
-  view(fcs).setUint16(0, crc16(payload), true)
-
-  return concat(Uint8Array.of(BOF), stuff(concat(payload, fcs)), Uint8Array.of(EOF))
 }

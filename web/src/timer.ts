@@ -20,3 +20,5 @@ export class Timer {
     this.#handle = undefined
   }
 }
+
+export const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
