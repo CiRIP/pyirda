@@ -1,3 +1,5 @@
+import { log } from "../log.ts"
+
 export async function ok<T extends USBInTransferResult | USBOutTransferResult>(transfer: Promise<T>): Promise<T> {
   const result = await transfer
   if (result.status !== "ok") throw new Error(`USB transfer failed: ${result.status}`)
@@ -17,3 +19,9 @@ export async function claim(device: USBDevice): Promise<USBInterface> {
 
 export const bulk = ({ alternate }: USBInterface, direction: USBDirection) =>
   alternate.endpoints.find((endpoint) => endpoint.type === "bulk" && endpoint.direction === direction)!
+
+export async function clearHalts(device: USBDevice, ...endpoints: USBEndpoint[]) {
+  for (const { direction, endpointNumber } of endpoints) {
+    await device.clearHalt(direction, endpointNumber).catch((error) => log.debug("clearHalt", direction, error))
+  }
+}

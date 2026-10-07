@@ -4,7 +4,7 @@ import { INITIAL_BAUD_RATE } from "../irlap/constants.ts"
 import { log } from "../log.ts"
 import { sleep } from "../timer.ts"
 import type { SirPort } from "./dongle.ts"
-import { bulk, claim, ok } from "./usb.ts"
+import { bulk, claim, clearHalts, ok } from "./usb.ts"
 
 const VENDOR_ID = 0x066f
 const PRODUCT_ID = 0x4200
@@ -71,7 +71,7 @@ export class STIR4200 extends Duplex implements SirPort {
 
   static async open(device: USBDevice): Promise<STIR4200> {
     const dongle = new STIR4200(device, await claim(device))
-    await dongle.#clearHalts()
+    await clearHalts(device, dongle.#in, dongle.#out)
     await dongle.setSpeed(INITIAL_BAUD_RATE)
     void dongle.#poll()
 
@@ -115,14 +115,6 @@ export class STIR4200 extends Duplex implements SirPort {
   }
 
   // --- dongle side ---
-
-  async #clearHalts() {
-    for (const endpoint of [this.#in, this.#out]) {
-      await this.#device
-        .clearHalt(endpoint.direction, endpoint.endpointNumber)
-        .catch((error) => log.debug("clearHalt", endpoint.direction, error))
-    }
-  }
 
   async #poll() {
     while (this.open) {

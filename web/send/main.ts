@@ -1,5 +1,5 @@
 import { STIR421X_PATCHES } from "../src/dongle/firmware/index.ts"
-import { KS959, MCS7780, SerialDongle, sir, STIR4200, STIR421X, type Dongle } from "../src/dongle/index.ts"
+import { KS959, MCS7780, MCS7784, SerialDongle, sir, STIR4200, STIR421X, type Dongle } from "../src/dongle/index.ts"
 import { IrLAP } from "../src/irlap/irlap.ts"
 import { IrLMP, type Device } from "../src/irlmp/index.ts"
 import { OBEX } from "../src/obex/index.ts"
@@ -11,6 +11,7 @@ const DISCOVERY_INTERVAL = 1000
 const USB_DRIVERS = [
   { filters: KS959.filters, open: async (device: USBDevice) => sir(await KS959.open(device)) },
   { filters: MCS7780.filters, open: async (device: USBDevice) => sir(await MCS7780.open(device)) },
+  { filters: MCS7784.filters, open: async (device: USBDevice) => sir(await MCS7784.open(device)) },
   { filters: STIR4200.filters, open: async (device: USBDevice) => sir(await STIR4200.open(device)) },
   { filters: STIR421X.filters, open: (device: USBDevice) => STIR421X.open(device, STIR421X_PATCHES) },
 ]

@@ -1,6 +1,6 @@
 import type { Dongle } from "../src/dongle/index.ts"
 import { STIR421X_PATCHES } from "../src/dongle/firmware/index.ts"
-import { KS959, MCS7780, SerialDongle, sir, STIR4200, STIR421X } from "../src/dongle/index.ts"
+import { KS959, MCS7780, MCS7784, SerialDongle, sir, STIR4200, STIR421X } from "../src/dongle/index.ts"
 import { IrLAP } from "../src/irlap/irlap.ts"
 import { baudRatePv, Parameters } from "../src/irlap/negotiation.ts"
 import { Hints, IrLMP, type Device } from "../src/irlmp/index.ts"
@@ -35,6 +35,10 @@ $("stir4200").onclick = guarded(async () =>
 
 $("mcs7780").onclick = guarded(async () =>
   start(sir(await MCS7780.open(await navigator.usb.requestDevice({ filters: MCS7780.filters })))),
+)
+
+$("mcs7784").onclick = guarded(async () =>
+  start(sir(await MCS7784.open(await navigator.usb.requestDevice({ filters: MCS7784.filters })))),
 )
 
 $("stir421x").onclick = guarded(async () =>
