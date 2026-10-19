@@ -43,7 +43,7 @@ class Sir extends Duplex<Transmission> implements Dongle {
   }
 
   protected async write({ frame, xbofs, turnaround }: Transmission) {
-    const bofs = new Uint8Array(xbofs + Math.ceil((turnaround * this.#baudRate) / 10_000)).fill(XBOF)
+    const bofs = new Uint8Array(Math.max(xbofs, Math.ceil((turnaround * this.#baudRate) / 10_000))).fill(XBOF)
     const raw = concat(bofs, Uint8Array.of(BOF), stuff(concat(frame, u16(crc16(frame), true))), Uint8Array.of(EOF))
 
     this.#txEnd = Math.max(performance.now(), this.#txEnd) + (raw.length * 10_000) / this.#baudRate
