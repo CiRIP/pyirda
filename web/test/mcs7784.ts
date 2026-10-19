@@ -75,7 +75,10 @@ export class FakeMCS7784 implements Partial<USBDevice> {
       throw new Error("unexpected request")
 
     const registers = setup.value === UART ? this.uart : this.vendor
-    return { data: new DataView(Uint8Array.of(registers[setup.index]).buffer), status: "ok" }
+    const value = registers[setup.index]
+    if (registers === this.uart && setup.index === UART_LSR) this.uart[UART_LSR] = LSR_TX_EMPTY
+
+    return { data: new DataView(Uint8Array.of(value).buffer), status: "ok" }
   }
 
   async transferOut(endpoint: number, source: BufferSource): Promise<USBOutTransferResult> {

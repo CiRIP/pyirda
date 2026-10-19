@@ -38,6 +38,7 @@ const LCR_8N1 = 0x03
 const LCR_DLAB = 0x80
 const MCR_IRDA = 0x40
 const LSR_TX_EMPTY = 0x40
+const LSR_ERRORS = 0x9e
 
 const BAUD_RATES = [2400, 9600, 19200, 38400, 57600, 115200]
 const BASE_BAUD_RATE = 115200
@@ -109,11 +110,21 @@ export class MCS7784 extends Duplex implements SirPort {
     try {
       while (this.open) {
         const { data } = await ok(this.#device.transferIn(this.#in.endpointNumber, RX_BUFFER_SIZE))
-        if (data?.byteLength) this.push(new Uint8Array(data.buffer, data.byteOffset, data.byteLength))
+        if (!data?.byteLength) continue
+
+        this.push(new Uint8Array(data.buffer, data.byteOffset, data.byteLength))
+        await this.#recoverFromLineErrors()
       }
     } catch (error) {
       this.end(error)
     }
+  }
+
+  async #recoverFromLineErrors() {
+    if (!((await this.#read(UART, UART_LSR)) & LSR_ERRORS)) return
+
+    await this.#write(UART, UART_FCR, 0)
+    await this.#write(UART, UART_FCR, FCR_RESET)
   }
 
   async #update(space: number, register: number, set: number) {

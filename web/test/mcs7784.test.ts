@@ -1,5 +1,6 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
+import { setTimeout } from "node:timers/promises"
 
 import { ascii, concat } from "../src/bytes.ts"
 import { MCS7784, sir } from "../src/dongle/index.ts"
@@ -30,6 +31,26 @@ test("programs the UART divisor and clock for the requested speed", async () => 
   assert.equal(device.vendor[2], 0)
 
   await dongle.close()
+})
+
+test("resets the FIFOs after a line error", async () => {
+  const [device, peer] = FakeMCS7784.pair()
+  const dongle = await open(device)
+  const other = await open(peer)
+
+  device.uart[2] = 0
+  device.uart[5] = 0x48
+
+  const writer = other.writable.getWriter()
+  await writer.write(ascii("noise"))
+  await dongle.readable.getReader().read()
+  await setTimeout(10)
+
+  assert.equal(device.uart[2], 0xcf)
+  assert.equal(device.uart[5], 0x40)
+
+  await dongle.close()
+  await other.close()
 })
 
 test("carries a full IrLAP session", async () => {
