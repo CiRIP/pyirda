@@ -15,6 +15,7 @@ test("programs the UART divisor and clock for the requested speed", async () => 
 
   assert.equal(device.baudRate, 9600)
   assert.equal(device.uart[3], 0x03)
+  assert.equal(device.uart[4], 0x40)
   assert.equal(device.uart[2], 0xcf)
   assert.equal(device.vendor[1], 0x58)
   assert.equal(device.vendor[4], 0x40)

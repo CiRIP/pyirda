@@ -21,6 +21,7 @@ const UART_DLL = 0
 const UART_IER = 1
 const UART_FCR = 2
 const UART_LCR = 3
+const UART_MCR = 4
 const UART_LSR = 5
 
 const VENDOR_CONTROL = 1
@@ -35,6 +36,7 @@ const DEVICE_CONTROL_IRDA = 0x40
 const FCR_RESET = 0xcf
 const LCR_8N1 = 0x03
 const LCR_DLAB = 0x80
+const MCR_IRDA = 0x40
 const LSR_TX_EMPTY = 0x40
 
 const BAUD_RATES = [2400, 9600, 19200, 38400, 57600, 115200]
@@ -64,6 +66,7 @@ export class MCS7784 extends Duplex implements SirPort {
     const dongle = new MCS7784(device, await claim(device))
     await clearHalts(device, dongle.#in, dongle.#out)
     await dongle.#update(VENDOR, VENDOR_CONTROL, CONTROL_READY)
+    await dongle.#update(UART, UART_MCR, MCR_IRDA)
     await dongle.setSpeed(INITIAL_BAUD_RATE)
     void dongle.#listen()
 
